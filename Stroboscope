@@ -1,0 +1,81 @@
+/////////////////////////////////////////////////////////M2 Stroboscope
+#include "avr/io.h"
+#include "m_general.h" //custom macros
+
+int main(void)
+{
+    m_green(ON);
+    int dip1;
+    int dip2;
+    int dip3;
+    int dip4;
+
+    set(TCCR1B,WGM13); // MODE: up to OCR0A, PWM
+    set(TCCR1B,WGM12); // MODE: up to OCR0A, PWM
+    set(TCCR1A,WGM11); // MODE: up to OCR0A, PWM
+    set(TCCR1A,WGM10); // MODE: up to OCR0A, PWM
+    
+    set(TCCR1A,COM1B1);   // clear at OCR1C, set at OCR0A
+    clear(TCCR1A,COM1B0); // clear at OCR0B, set at OCR0A
+    
+    set(TCCR1B,CS12);   //set prescaler to /1024
+    clear(TCCR1B,CS11); //set prescaler to /1024
+    set(TCCR1B,CS10);   //set prescaler to /1024
+    
+    set(DDRB,6);    //set B6 as output
+    clear(DDRF, 0); //set F0 as input
+    clear(DDRD, 4); //set D4 as input
+    clear(DDRD, 5); //set D5 as input
+    clear(DDRD, 6); //set D6 as input
+    clear(DDRD, 7); //set D7 as input
+    
+    clear(ADMUX,REFS1); //Vcc Voltage Reference
+    set(ADMUX,REFS0);   //Vcc Voltage Reference
+    
+    set(ADCSRA,ADPS2);   //set prescaler to /16
+    clear(ADCSRA,ADPS1); //set prescaler to /16
+    clear(ADCSRA,ADPS0); //set prescaler to /16
+    
+    set(DIDR0,ADC0D); //Disabling Digital Output
+    
+    set(ADCSRA,ADATE); //Triggering
+        
+    clear(ADCSRB,MUX5); //F0 Channel Selection
+    clear(ADMUX,MUX2);  //F0 Channel Selection
+    clear(ADMUX,MUX1);  //F0 Channel Selection
+    clear(ADMUX,MUX0);  //F0 Channel Selection
+    
+    set(ADCSRA,ADEN); //Conversion Process
+    set(ADCSRA,ADSC); //Conversion Process
+        
+    set (ADCSRA,ADIF); //Setting Flag
+    while(1)
+    {
+        if(check(PIND, 4)){ //Checking PinD4
+			dip1 = 1;
+		}
+		else{
+			dip1 = 0;
+		}
+		if(check(PIND, 5)){ //Checking PinD5
+			dip2 = 1;
+		}
+		else{
+			dip2 = 0;
+		}
+		if(check(PIND, 6)){ //Checking PinD6
+			dip3 = 1;
+		}
+		else{
+			dip3 = 0;
+		}
+		if(check(PIND, 7)){//Checking PinD7
+			dip4 = 1;
+		}
+		else{
+			dip4 = 0;
+		}
+        OCR1A = 40 + (ADC * 3); //Setting OCR1A - Frequency
+        OCR1B = (float)(4 + (dip1 + dip2 + dip3 + dip4)*(OCR1A/5)); //Setting OCR1B - PWM
+    }
+}
