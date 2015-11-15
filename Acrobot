@@ -1,0 +1,281 @@
+//////////////////////////////////////////////////Lab 6 Acrobot
+    /*
+B4 to INV pin
+B6 to M1 IN1 pin
+B7 to M2 IN1 pin
+F0 to EN pin
+D0, D1, D2 from IMU
+*/
+
+#define F_CPU 16000000
+
+#include "m_general.h"
+#include "m_imu.h"
+#include "m_usb.h"
+
+
+#define accel_scale 0
+#define gyro_scale 0
+#define PI 3.14
+#define ACCEL_SENS 16834
+#define GYRO_SENS 131
+#define RATE 100							//frequency of IMU readings in Hz
+#define alpha 0.12							//constant for complimentary filter
+#define Kp 550								//P constant //
+#define Ki 3.00								//I constant
+#define Kd 1.00								//D constant
+#define READ_MAX 160						//timer0 OCR0A value for IMU readings frequency | equals 100 Hz
+#define MOTOR_INC 4000						//value of OCR1A to control motor in Hz = 16000000/value
+#define MOTOR_MAX 1300						//2200 timer1 OCR1B value for motor control | //2700
+#define angle_comp 0.25						//compensation angle for meeting goal
+#define Kd_MAX 1500.00
+
+void init(void);
+void init_timer0(void);
+void init_timer1(void);
+void IMU_read(void);
+void IMU_gyro_convert(void);				//convert raw gyro readings with gyro sensitivity
+void check_direction(void);					//check and switch direction of motors if necessary
+void set_PWM(void);							//check speed of motor
+void set_goal(void);						//check for slope and set new goal to account for slope
+int PID(void);								//PID calculation
+void zero_accu_error(void);					//zero error accumulation if goal is met
+void motor_min_max(void);					//limit motor PWM
+void Kd_calc(void);
+void Kd_eq_correction(void);
+
+int IMU_data_prev[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+int IMU_data[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};			//raw IMU data goes here
+float IMU_data_gyro[3] = {0.00,0.00,0.00};
+float IMU_data_gyro_prev[3] = {0.00,0.00,0.00};
+volatile int x = 0;
+float angle_goal = 90.00;
+float angle_curr = 90.00;
+float angle_prev = 0.00;
+float gyro_comp = 0.00;
+float gyro_comp_prev = 0.00;
+float accel_val = 0.00;
+float angle_error = 0.00;
+float accumulated_error = 0.00;
+int output = 0;
+float Kd_eq = 0.00;
+float Kp_eq = 0.00;
+float Ki_eq = 0.00;
+
+int main(void)
+{
+	/*m_usb_init();
+	while(!m_usb_isconnected());*/
+	m_imu_init(accel_scale, gyro_scale);
+	m_wait(500);
+	m_green(ON);
+	init();
+	init_timer0();
+	init_timer1();
+	sei();
+	while(1)
+	{
+		if (TCNT0 == READ_MAX){
+			IMU_read();
+		}
+		check_direction();
+	}
+}
+
+void init(void){
+	m_clockdivide(0);				//set to 16MHz
+	set(DDRB, 4);					//set B4 as output
+	clear(PORTB, 4);
+	set(DDRF, 0);
+	set(PORTF, 0);
+}
+
+void init_timer0(void){	
+	OCR0A = READ_MAX;	
+	
+	TCNT0 = 0;
+	
+	set(TCCR0B, WGM02);				//up to OCR1A in PWM
+	set(TCCR0A, WGM01);
+	set(TCCR0A, WGM00);
+	
+	set(TCCR0B, CS02);				//clock scaled by /1024 to 16kHz
+	clear(TCCR0B, CS01);
+	set(TCCR0B, CS00);
+}
+
+void init_timer1(void){
+	set(DDRB, 6);					//set to enable output pins
+	set(DDRB, 7);
+	
+	OCR1A = MOTOR_INC;
+	OCR1B = 1;
+	OCR1C = 1;
+	
+	TCNT1 = 0;						//initialize counter value
+	
+	set(TCCR1B, WGM13);				//up to OCR1A PWM mode
+	set(TCCR1B, WGM12);
+	set(TCCR1A, WGM11);
+	set(TCCR1A, WGM10);	
+	
+	set(TCCR1A, COM1B1);			//clear at OCR1B, set at rollover
+	set(TCCR1A, COM1B0);
+	
+	set(TCCR1A, COM1C1);			//clear at OCR1C, set at rollover
+	set(TCCR1A, COM1C0);
+	
+	clear(TCCR1B, CS12);			//clock scaled by /1 to 16MHz
+	clear(TCCR1B, CS11);
+	set(TCCR1B, CS10);
+	
+}
+
+void IMU_read(void){
+	m_imu_raw(IMU_data);
+	IMU_gyro_convert();
+	/*
+	m_usb_tx_int(IMU_data_gyro[1]);
+	m_usb_tx_string(",  ");
+	m_usb_tx_int(IMU_data[0]);
+	m_usb_tx_string(",  ");
+	m_usb_tx_int(IMU_data[2]);
+	m_usb_tx_string(",  ");
+	*/
+	angle_prev = angle_curr;
+	gyro_comp_prev = gyro_comp;
+	gyro_comp = (float)((1-alpha)*gyro_comp_prev + (1-alpha)*(IMU_data_gyro[1]-IMU_data_gyro_prev[1]));
+	accel_val = (float)(atan2(((float)IMU_data[0]/ACCEL_SENS), ((float)IMU_data[2]/ACCEL_SENS)))*180/PI*(-1); //a_x a_z
+	angle_curr = (float)(((1-alpha)*angle_prev + gyro_comp/RATE)+(alpha*accel_val)) - angle_comp;				
+	set_PWM();
+	//check_direction();
+	
+	m_usb_tx_string("current angle");
+	m_usb_tx_int((int)angle_curr);
+	m_usb_tx_string(",  Kp Eq");
+	m_usb_tx_int((int)Kp_eq);
+	m_usb_tx_string(",  Ki Eq");
+	m_usb_tx_int((int)Ki_eq);
+	m_usb_tx_string(",  Kd Eq");
+	m_usb_tx_int((int)Kd_eq);
+	m_usb_tx_string(",  Output ");
+	m_usb_tx_int((int)output);
+	m_usb_tx_string(",  ");
+	m_usb_tx_int(OCR1B);
+	m_usb_tx_string(",  ");
+	m_usb_tx_int(OCR1C);
+	m_usb_tx_string("\n");
+	
+}
+
+void IMU_gyro_convert(void){
+    int i;
+    for(i=0; i<3; i++){
+		IMU_data_gyro_prev[i]=IMU_data_gyro[i];
+		IMU_data_gyro[i] = IMU_data[i+3]/GYRO_SENS;
+	}
+}
+
+void check_direction(void){
+	if (angle_curr <= angle_goal){
+		set(PORTB, 4);
+		if (x == 0){
+			accumulated_error = 0;
+		}
+		x = 1;
+	}
+	else if (angle_curr > angle_goal){
+		clear(PORTB, 4);
+		if (x == 1){
+			accumulated_error = 0;
+		}
+		x = 0;
+	}/*
+	else if (angle_curr == angle_goal){
+		toggle(PORTB, 4);
+	}*/
+}
+
+int PID(void){
+	angle_error = abs(angle_goal-angle_curr);
+	accumulated_error += angle_error;
+	Kd_calc();
+	zero_accu_error();
+	Ki_eq = (Ki * accumulated_error);
+	if(Ki_eq > 4000)
+	{
+		Ki_eq = 4000;
+	}
+	Kp_eq = (Kp * angle_error * angle_error);
+	if(Kp_eq > 4000)
+	{
+		Kp_eq = 4000;
+	}
+	output =(float)Kp_eq + Kd_eq + Ki_eq;
+	motor_min_max();
+	if (angle_curr == angle_goal){
+		output = 0;
+	}
+	return output;
+}
+
+void set_PWM(void){
+	OCR1B = PID();
+	OCR1C = OCR1B;
+}
+
+void Kd_calc(void){
+	if (angle_curr > angle_prev && angle_curr > angle_goal){  //falling forwards falling
+		Kd_eq = (float)abs(Kd * IMU_data_gyro[1])*(1);
+	}
+	else if (angle_curr < angle_prev && angle_curr > angle_goal){	//falling forwards recovering
+		Kd_eq = (float)abs(Kd * IMU_data_gyro[1])*(-1);
+	}
+	else if (angle_curr > angle_prev && angle_curr < angle_goal){ //falling backwards recovering
+		Kd_eq = (float)abs(Kd * IMU_data_gyro[1])*(-1);
+	}
+	else if (angle_curr < angle_prev && angle_curr < angle_goal){ //falling backwards falling
+		Kd_eq = (float)abs(Kd * IMU_data_gyro[1])*(1);
+	}
+	else if (angle_curr == angle_prev){
+		Kd_eq = 0;
+	}
+	Kd_eq_correction();
+}
+
+void Kd_eq_correction(void){
+	if (Kd_eq > Kd_MAX ){
+		Kd_eq = Kd_MAX;
+	}
+	else if (Kd_eq == 0){
+		Kd_eq = 0;
+	}
+	else if (Kd_eq < 0){
+		if (Kd_eq < (float)Kd_MAX*(-1)){
+			Kd_eq = (float)Kd_MAX*(-1);
+		}
+		Kd_eq = (float)Kd_MAX*(-1) - Kd_eq;
+	}
+}
+
+void zero_accu_error(void){
+	if (angle_goal == angle_curr || accumulated_error < 0){
+		accumulated_error = 0;
+	}
+	else if (accumulated_error >= 10000){
+		accumulated_error = 10000;
+	}
+}
+
+void motor_min_max(void){
+	if (output > MOTOR_MAX){
+		output = MOTOR_MAX;
+	}
+	else if (output < 1){
+		output = 10;
+	}
+}
+
+void set_goal(void){				//check tilt angle to account for slope
+	;
+}
