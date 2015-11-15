@@ -1,0 +1,113 @@
+#define F_CPU 16000000
+
+#include "m_general.h"
+
+#define MAX 100					//original 100
+
+void init(void);
+void init_timer(void);
+void init_ADC(void);
+long map(int, int, int, long, long);	//to extrapolate a range of numbers to another
+
+long x = 1;				//counter for how many times timer overflows.  78 = 1 second. 468 = 6 seconds
+long time = 300;					//how much x needs to be to shoot off.  1700 for max power.  300 for minimum
+
+/*
+TABLE FOR CAP CHARGE
+VOLTAGE TO CHARGE CAP TO//TIME IN SECONDS //what TIME needs to be
+14//3.25//253
+27//20//1560
+*/
+
+ISR(TIMER0_OVF_vect){
+	if (x != 0 && x != time){
+		m_red(ON);
+		x++; 
+	}
+	else if (x != 0 && x == time){
+		x = 0;						//reset counter
+		m_red(OFF);
+		m_green(ON);
+	}
+	else if (x == 0){
+		set(PORTD, 7);			//HIGH to fire solenoid
+		m_wait(100);		 					//hold fire
+		m_green(OFF);
+		clear(PORTD, 7);		//LO to retract solenoid
+	}
+}
+
+ISR(ADC_vect){
+	//90cm 4.5V(0.5V), 40cm 2.1V(2.9V)	
+	
+	if (ADC > 500){
+		time = map(ADC, 500, 1024, 3000, 400);
+	}
+	else if (ADC >= 0 && ADC <= 500){
+		time = map(ADC, 0, 500, 3000, 400);
+	}
+	else if (ADC < 0){
+		time = 1500;
+	}
+	//time = map(ADC, 0, 1023, 3000, 400);
+	//original was map(ADC, 220, 950, 15600, 2530) 3.8 to .2
+}
+
+int main(void)
+{
+	init();
+	m_wait(300);					//wait 10 seconds until it starts to read
+	init_ADC() ;
+	sei();
+	init_timer();
+    while(1)
+    {
+		//set(PORTD, 7);
+        //This is where the magic happens 
+    }
+}
+
+void init(void){
+	m_clockdivide(3);					//set system clock to 2MHz
+	set(DDRD, 7);						//set output pin D7 solenoid
+	clear(PORTD, 7);
+}
+
+void init_timer(void){
+	
+	OCR0A = MAX;						//counter resolution
+	
+	TCNT0 = 0;							//initialize counter
+	
+	set(TCCR0B, WGM02);					//up to OCR0A PWM
+	set(TCCR0A, WGM01);
+	set(TCCR0A, WGM00);
+	
+	set(TIMSK0, TOIE0);					//call interrupt when overflows
+
+	set(TCCR0B, CS02);					// scale clock by /256 to 7812.5 Hz
+	clear(TCCR0B, CS01);
+	clear(TCCR0B, CS00);
+}
+
+void init_ADC(void){
+	clear(ADMUX, REFS1);				//set Vref to Vcc (5V)
+	set(ADMUX, REFS0);
+	
+	set(ADCSRA, ADPS2);					//set ADC clock to /16 to 125kHz
+	clear(ADCSRA, ADPS1);
+	clear(ADCSRA, ADPS0);
+	
+	set(DIDR0, ADC0D);					//disable digital input pin ADC0 (F0)
+
+	set(ADCSRA, ADIE);					//call interrupt when ADC conversion finish
+
+	set(ADCSRA, ADEN);					//enable ADC subsystem
+
+	set(ADCSRA, ADSC);					//start conversion
+}
+
+long map(int x, int in_min, int in_max, long out_min, long out_max){
+	long c = ((x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
+	return c;
+} 
